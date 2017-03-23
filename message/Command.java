@@ -1,3 +1,4 @@
+package message;
 
 public enum Command {
 	DIR,
