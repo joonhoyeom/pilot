@@ -1,7 +1,7 @@
 package message;
 
-public class DIRMessage extends Message {
-	
+public class DIRRESMessage extends Message {
+
 	@Override
 	int getMessageLen() {
 		// TODO Auto-generated method stub
@@ -13,5 +13,4 @@ public class DIRMessage extends Message {
 		// TODO Auto-generated method stub
 		return null;
 	}
-
 }
