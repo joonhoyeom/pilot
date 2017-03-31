@@ -1,5 +1,7 @@
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.StandardSocketOptions;
+import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
@@ -10,22 +12,24 @@ import java.util.List;
 import java.util.Set;
 import java.util.Vector;
 
+import message.Command;
 import message.MessageHeader;
 import messageResponder.MessageResponder;
+import utils.Utils;
 
 public class Communicator {
 	
 	//shared variable
 	private List<Client> clientList;
+	private Object clientListMutex; 
 	private boolean stop = false;
-	
-	
+		
 	private SocketHandler socketHandler;
 	private MessageHandler messageHandler;
 		
 	class SocketHandler extends Thread{
 		
-		final private int PORT = 9999;
+		final private int PORT = 9998;
 	
 		private Selector selector;
 		private ServerSocketChannel serverSocketChannel = null;
@@ -38,6 +42,7 @@ public class Communicator {
 				selector = Selector.open();
 
 				serverSocketChannel = ServerSocketChannel.open();
+				serverSocketChannel.setOption(StandardSocketOptions.SO_REUSEADDR, true);
 				serverSocketChannel.configureBlocking(false);
 				serverSocketChannel.bind(new InetSocketAddress(PORT));
 				serverSocketChannel.register(selector, SelectionKey.OP_ACCEPT);
@@ -51,68 +56,89 @@ public class Communicator {
 		public void run() {
 			
 			// multiplexing request
-			while (true) {
+			while (!stop) {
+				int nSelectedKey = 0;
 				try {
-					selector.select();
+					nSelectedKey = selector.select();
 				} catch (IOException e) {
 					// TODO Auto-generated catch block
 					e.printStackTrace();
 					break;
 				}
 
-				Set<SelectionKey> readyKeys = selector.selectedKeys();
-				Iterator<SelectionKey> iterator = readyKeys.iterator();
+				if(nSelectedKey > 0){
+					Set<SelectionKey> readyKeys = selector.selectedKeys();
+					Iterator<SelectionKey> iterator = readyKeys.iterator();
 
-				// Handle selected sockets
-				while (iterator.hasNext()) {
-					SelectionKey key = iterator.next();
-					iterator.remove();
-					try {
-						if (key.isAcceptable()) {
+					// Handle selected sockets
+					while (iterator.hasNext()) {
+						SelectionKey key = iterator.next();
+						iterator.remove();
+						try {
+							if (key.isAcceptable()) {
 							
-							SocketChannel socketChannel = ((ServerSocketChannel) key.channel()).accept();
+								SocketChannel socketChannel = ((ServerSocketChannel) key.channel()).accept();
 							
-							Client client = new Client( socketChannel.getRemoteAddress().toString().substring(1).split(":")[0], socketChannel);
-							clientList.add(client);
+								Client client = new Client( socketChannel.getRemoteAddress().toString().substring(1).split(":")[0], socketChannel);
+								client.pushMessage(Command.DIR, "".getBytes());
+								
+								synchronized (clientListMutex) {
+									clientList.add(client);
+								}
+								
 							
-							socketChannel.configureBlocking(false);
-							SelectionKey selectionKey = socketChannel.register(selector, SelectionKey.OP_WRITE);
-							selectionKey.attach(client);
-							
-							System.out.println("[" + client.getIP() + "]connected");
-							
-						} else if (key.isReadable()) {
-							Client client = (Client)key.attachment();
-							
-							int recvCount = 0;							
-							synchronized (client.recvBufferMutex) {
-								recvCount= client.readFromSocket();
-							}
-							if(recvCount == -1){
-								clientList.remove(client);
-								key.cancel();
-								client.closeSocketChannel();
-								System.out.println("[" + client.getIP() +"] : closed" );
-							}else
-								key.interestOps(SelectionKey.OP_WRITE);
+								socketChannel.configureBlocking(false);
+								SelectionKey selectionKey = socketChannel.register(selector, SelectionKey.OP_WRITE | SelectionKey.OP_READ);
+								selectionKey.attach(client);
 														
-						} else if (key.isWritable()) {
-							Client client = (Client)key.attachment();
+								System.out.println("[" + client.getIP() + "]connected");
+				
 							
-							int writeCount = 0;
-							synchronized (client.sendBufferMutex) {
-								writeCount = client.writeToSocket();
-							}							
-							key.interestOps(SelectionKey.OP_READ);							
-						} else {
-							System.out.println("Unknown Key Behavior");
+							} else if (key.isReadable()) {
+//								System.out.println("###DEBUG key : READABLE");
+							
+								Client client = (Client)key.attachment();
+							
+								int recvCount = 0;							
+								synchronized (client.recvBufferMutex) {
+									recvCount= client.readFromSocket();
+									if(recvCount == 0)
+										key.interestOps(SelectionKey.OP_WRITE);
+									else{
+										System.out.println(recvCount + " : "+ new String(client.recvBuffer.array()));
+								
+									}
+								}
+								if(recvCount == -1){
+									synchronized (clientListMutex) {
+										clientList.remove(client);	
+									}
+									key.cancel();
+									client.closeSocketChannel();
+									System.out.println("[" + client.getIP() +"] : closed" );
+								}							
+							} else if (key.isWritable()) {
+//								System.out.println("###DEBUG key : WRITABLE");
+								Client client = (Client)key.attachment();
+							
+								int writeCount = 0;
+								synchronized (client.sendBufferMutex) {
+									if(client.sendBuffer.position() > 0){
+										client.sendBuffer.flip();
+										writeCount = client.writeToSocket();
+									}
+								}
+								//Temporal code!!
+								key.interestOps(SelectionKey.OP_READ);
+							} else {
+								System.out.println("Unknown Key Behavior");
+							}
+						} catch (IOException e) {
+							// TODO Auto-generated catch block
+							e.printStackTrace();
 						}
-					} catch (IOException e) {
-						// TODO Auto-generated catch block
-						e.printStackTrace();
 					}
 				}
-				selector.wakeup();
 			}
 
 			if (serverSocketChannel.isOpen()) {
@@ -131,78 +157,83 @@ public class Communicator {
 		//parse recvBuffer into messages
 		private void processMessages(Client client){
 		
-			String recvBufferString = null;
-			
+			byte[] recvBufferCopy = null;
+			ByteBuffer recvBuffer = client.recvBuffer;
+	
 			//fetch messages from recvBuffer
 			synchronized (client.recvBufferMutex) {
-				
-				if(client.recvBuffer.hasRemaining()){
+								
+				if(recvBuffer.position() > 0){
+					recvBufferCopy = new byte[recvBuffer.position()];
+					recvBuffer.flip();
+					System.arraycopy(recvBuffer.array(), 0, recvBufferCopy, 0, recvBufferCopy.length);
+					recvBuffer.clear();
 					
-					//buffer -> string and clear buffer
-					Charset charset = Charset.forName("UTF-8");
-					recvBufferString = charset.decode(client.recvBuffer).toString();
-					client.recvBuffer.clear();
-					
-					int lastHeaderPos = recvBufferString.lastIndexOf(MessageHeader.messageStart);
-					
-					//last header is not arrived yet
-					if(recvBufferString.substring(lastHeaderPos).length() < MessageHeader.serializedSize){
-						//put last header into buffer back 
-						client.recvBuffer.put(recvBufferString.substring(lastHeaderPos).getBytes());
-						//fetch valid messages
-						recvBufferString = recvBufferString.substring(0, lastHeaderPos);
-					} else {
-						MessageHeader lastHeader = new MessageHeader( (recvBufferString.substring(lastHeaderPos, lastHeaderPos+ MessageHeader.serializedSize)).getBytes() );
-						int lastMessageEnd = lastHeaderPos + MessageHeader.serializedSize + lastHeader.getMessageBodySize();
+					int i = 0;
+					while(true){
+						int headerPos = Utils.indexOf(recvBufferCopy, MessageHeader.messageStart, i);
 						
-						//put unanimous data back
-						client.recvBuffer.put(recvBufferString.substring(lastMessageEnd + 1).getBytes() );
-						//fetch valid messages
-						recvBufferString = recvBufferString.substring(0, lastMessageEnd);
+						if(headerPos == -1){
+							break;
+						}
+						
+						//Header is not arrived yet
+						if (recvBufferCopy.length - headerPos < MessageHeader.serializedSize) {
+							// put last header into buffer back
+							recvBuffer.put(recvBufferCopy, headerPos, recvBufferCopy.length - headerPos);
+							break;
+						}
+						//Unserialize MessageHeader
+						MessageHeader header = new MessageHeader(recvBufferCopy, headerPos);
+						int messageBodyStart = headerPos + MessageHeader.serializedSize;
+						int messageBodyEnd = headerPos + MessageHeader.serializedSize + header.getMessageBodySize();
+						
+						//MessageBody is not arrived yet
+						if(messageBodyEnd > recvBufferCopy.length){
+							recvBuffer.put(recvBufferCopy, headerPos, recvBufferCopy.length - headerPos);
+							break;
+						}
+						
+						byte []messageBody = new byte [header.getMessageBodySize()];
+						
+						System.arraycopy(recvBufferCopy, messageBodyStart, messageBody, 0, header.getMessageBodySize());
+						
+						//Process Message
+						//Incomplete code
+						{
+							MessageResponder mr = MessageResponder.newMessageResponder(header);
+							if(mr != null){
+								mr.respond(messageBody);
+							} else {
+								System.err.println("Invalid message header");
+							}							
+						}
+						i = messageBodyEnd;
 					}
 				}
 				else //there are no messages
 					return;
 			}
-			
-			//extract MessageHeader and Body , 
-			if(recvBufferString != null){
-				for (int headerPos = recvBufferString.indexOf(MessageHeader.messageStart) ; headerPos < recvBufferString.length(); ) {
-					
-					MessageHeader messageHeader = new MessageHeader(
-							recvBufferString.substring(headerPos, headerPos + MessageHeader.serializedSize).getBytes());
-					
-					int messageBodyStart = headerPos + MessageHeader.serializedSize;
-					int messageBodyEnd   = headerPos + MessageHeader.serializedSize + messageHeader.getMessageBodySize();
-					
-					String messageBody = recvBufferString.substring(messageBodyStart , messageBodyEnd);
-					
-					headerPos = messageBodyEnd;
-					MessageResponder mr = MessageResponder.newMessageResponder(messageHeader);
-					if(mr != null){
-						mr.respond(messageBody);
-					} else {
-						System.err.println("Invalid message header");
-					}
-				}		
-			}	
+				
 		}
 				
 		
 		@Override
 		public void run() {
-			while(true){				
-				for(Client client : clientList){
-					processMessages(client);	
+			while( !stop ){
+				synchronized (clientListMutex) {
+					for(Client client : clientList){
+						processMessages(client);	
+					}	
 				}
-				if(stop)
-					break;
+				
 			}
 		}
 	}	
 		
 	public Communicator(){
 		clientList = new Vector<Client>();
+		clientListMutex = new Object();
 		socketHandler = new SocketHandler();
 		messageHandler = new MessageHandler();
 	}

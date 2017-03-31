@@ -15,5 +15,7 @@ public class Command {
 	final public static int FILERES 	= 8;
 	
 
-	final public static int LASTCOMMAND = 8;
+	final public static int LASTCOMMAND = FILERES;
+	
+	public static boolean isValidCommand(int command){ return command >= 0 && command <= LASTCOMMAND ? true : false;}
 }

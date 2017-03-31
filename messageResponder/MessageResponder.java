@@ -11,7 +11,7 @@ public abstract class MessageResponder {
 		switch (command) {
 			
 			case Command.DIRRES:
-				return new DirresResponder();
+				return new DirResResponder();
 			
 			case Command.FILE:
 				return new FileResponder();
