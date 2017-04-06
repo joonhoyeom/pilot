@@ -13,11 +13,11 @@ public abstract class MessageResponder {
 			case Command.DIRRES:
 				return new DirResResponder();
 			
-			case Command.FILE:
-				return new FileResponder();
+			case Command.FILEUP:
+				return new FileUpResponder();
 
-			case Command.FILERES:
-				return new FileresResponder();
+			case Command.FILEDOWN:
+				return new FileDownResponder();
 				
 			default:
 				return null;

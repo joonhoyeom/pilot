@@ -20,8 +20,8 @@ import utils.Utils;
 public class Communicator {
 	
 	//shared variable
-	private List<Client> clientList;
-	private Object clientListMutex; 
+	public List<Client> clientList;
+	public Object clientListMutex;
 	private boolean stop = false;
 		
 	private SocketHandler socketHandler;
@@ -37,7 +37,7 @@ public class Communicator {
 		public SocketHandler() {
 			
 			//Selector and server socket initialize
-			
+			setPriority(8);
 			try {
 				selector = Selector.open();
 
@@ -59,9 +59,8 @@ public class Communicator {
 			while (!stop) {
 				int nSelectedKey = 0;
 				try {
-					nSelectedKey = selector.select();
+					nSelectedKey = selector.select(1500);
 				} catch (IOException e) {
-					// TODO Auto-generated catch block
 					e.printStackTrace();
 					break;
 				}
@@ -76,7 +75,6 @@ public class Communicator {
 						iterator.remove();
 						try {
 							if (key.isAcceptable()) {
-							
 								SocketChannel socketChannel = ((ServerSocketChannel) key.channel()).accept();
 							
 								Client client = new Client( socketChannel.getRemoteAddress().toString().substring(1).split(":")[0], socketChannel);
@@ -85,7 +83,6 @@ public class Communicator {
 								synchronized (clientListMutex) {
 									clientList.add(client);
 								}
-								
 							
 								socketChannel.configureBlocking(false);
 								SelectionKey selectionKey = socketChannel.register(selector, SelectionKey.OP_WRITE | SelectionKey.OP_READ);
@@ -95,30 +92,31 @@ public class Communicator {
 				
 							
 							} else if (key.isReadable()) {
-//								System.out.println("###DEBUG key : READABLE");
+								System.out.println("###DEBUG key : READABLE");
 							
 								Client client = (Client)key.attachment();
 							
 								int recvCount = 0;							
 								synchronized (client.recvBufferMutex) {
+									//TODO recvBuffer overflow handling
 									recvCount= client.readFromSocket();
-									if(recvCount == 0)
-										key.interestOps(SelectionKey.OP_WRITE);
-									else{
-										System.out.println(recvCount + " : "+ new String(client.recvBuffer.array()));
-								
-									}
+//									if(recvCount > 0){
+//										System.out.println(recvCount + " : "+ new String(client.recvBuffer.array()));
+//									}
 								}
+								//client closes socket.
 								if(recvCount == -1){
 									synchronized (clientListMutex) {
 										clientList.remove(client);	
 									}
+									//remove from selector set
 									key.cancel();
-									client.closeSocketChannel();
+									if(client.socketChannel.isOpen())
+										client.socketChannel.close();
 									System.out.println("[" + client.getIP() +"] : closed" );
 								}							
 							} else if (key.isWritable()) {
-//								System.out.println("###DEBUG key : WRITABLE");
+								//System.out.println("###DEBUG key : WRITABLE");
 								Client client = (Client)key.attachment();
 							
 								int writeCount = 0;
@@ -128,7 +126,6 @@ public class Communicator {
 										writeCount = client.writeToSocket();
 									}
 								}
-								//Temporal code!!
 								key.interestOps(SelectionKey.OP_READ);
 							} else {
 								System.out.println("Unknown Key Behavior");
@@ -136,6 +133,16 @@ public class Communicator {
 						} catch (IOException e) {
 							// TODO Auto-generated catch block
 							e.printStackTrace();
+						}
+					}
+				}
+				//if there are messages to send, set writable option
+				synchronized (clientListMutex){
+					for(Client i : clientList){
+						synchronized (i.sendBufferMutex){
+							if(i.sendBuffer.position() > 0){
+								i.socketChannel.keyFor(selector).interestOps(SelectionKey.OP_WRITE | SelectionKey.OP_READ);
+							}
 						}
 					}
 				}
@@ -148,7 +155,6 @@ public class Communicator {
 					System.err.println("Socket close fail");
 				}
 			}
-			//
 		}
 	}
 	
@@ -156,29 +162,36 @@ public class Communicator {
 		
 		//parse recvBuffer into messages
 		private void processMessages(Client client){
-		
+			setPriority(3);
 			byte[] recvBufferCopy = null;
 			ByteBuffer recvBuffer = client.recvBuffer;
-	
-			//fetch messages from recvBuffer
+
+			//TODO reduce critical section
+			//fetch messages from recvBuffer, and process each message
 			synchronized (client.recvBufferMutex) {
 								
 				if(recvBuffer.position() > 0){
+
+					//copy data in recvBuffer
 					recvBufferCopy = new byte[recvBuffer.position()];
-					recvBuffer.flip();
 					System.arraycopy(recvBuffer.array(), 0, recvBufferCopy, 0, recvBufferCopy.length);
 					recvBuffer.clear();
 					
 					int i = 0;
-					while(true){
+					while(i < recvBufferCopy.length){
+						//Find position of first messageStart
 						int headerPos = Utils.indexOf(recvBufferCopy, MessageHeader.messageStart, i);
 						
 						if(headerPos == -1){
+							System.out.println("No MessageStart");
+							System.out.println("[" + (recvBufferCopy.length - i) + "] : recvBufferCopy dump");
+							Utils.printByteArray(recvBufferCopy, i);
 							break;
 						}
 						
 						//Header is not arrived yet
 						if (recvBufferCopy.length - headerPos < MessageHeader.serializedSize) {
+							System.out.println("Invalid Header");
 							// put last header into buffer back
 							recvBuffer.put(recvBufferCopy, headerPos, recvBufferCopy.length - headerPos);
 							break;
@@ -187,7 +200,8 @@ public class Communicator {
 						MessageHeader header = new MessageHeader(recvBufferCopy, headerPos);
 						int messageBodyStart = headerPos + MessageHeader.serializedSize;
 						int messageBodyEnd = headerPos + MessageHeader.serializedSize + header.getMessageBodySize();
-						
+
+						//TODO large message handle -> break message into several pieces.
 						//MessageBody is not arrived yet
 						if(messageBodyEnd > recvBufferCopy.length){
 							recvBuffer.put(recvBufferCopy, headerPos, recvBufferCopy.length - headerPos);
@@ -198,8 +212,7 @@ public class Communicator {
 						
 						System.arraycopy(recvBufferCopy, messageBodyStart, messageBody, 0, header.getMessageBodySize());
 						
-						//Process Message
-						//Incomplete code
+						//Process MessageBody
 						{
 							MessageResponder mr = MessageResponder.newMessageResponder(header);
 							if(mr != null){
