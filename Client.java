@@ -64,7 +64,7 @@ public class Client {
             sendBuffer.put(messageBody);
         } catch (BufferOverflowException e) {
             sendBuffer.position(pushPos); //eliminate pushed message
-            System.err.println(ip + " : send buffer overflow");
+//            System.err.println(ip + " : send buffer overflow");
             return false;
         }
         return true;

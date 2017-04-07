@@ -16,9 +16,6 @@ public abstract class MessageResponder {
 			case Command.FILEUP:
 				return new FileUpResponder();
 
-			case Command.FILEDOWN:
-				return new FileDownResponder();
-				
 			default:
 				return null;
 		}

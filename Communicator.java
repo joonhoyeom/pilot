@@ -29,7 +29,7 @@ public class Communicator {
 		
 	class SocketHandler extends Thread{
 		
-		final private int PORT = 9998;
+		final private int PORT = 9999;
 	
 		private Selector selector;
 		private ServerSocketChannel serverSocketChannel = null;

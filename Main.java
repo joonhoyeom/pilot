@@ -88,8 +88,13 @@ public class Main {
 
                         break;
                     }
-                    case Command.FILEDOWN:
+                    case Command.FILEDOWN:{
+                        System.out.print("file path : ");
+                        String path = s.next();
+                        FileDownMessageBody body = new FileDownMessageBody(path);
+                        client.pushMessage(command, body.serialize());
                         break;
+                    }
 
                     case Command.RENAME: {
                         System.out.print("targ dir : ");
